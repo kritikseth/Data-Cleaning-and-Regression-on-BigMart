@@ -1,0 +1,366 @@
+---
+title: Data Cleaning and Regression on BigMart Data in R
+author: Kritik Seth
+---
+
+This dataset contains information about BigMart a nation wide supermarket chain. Bigmart's board of directors have given a challenge to all the data scientists stating to create a model that can predict the sales, per product, for each store. BigMart has collected sales data from the year 2013, for 1559 products across 10 stores in different cities. With this information the corporation hopes we can identify the products and stores which play a key role in their sales and use that information to take the correct measures to ensure success of their business.
+
+As an aspiring data scientist, understanding how to clean and model data like this is of great importance to me. In this kernel, I will use the BigMart data clean it and explore which factors affect the Item_Outlet_Sales. I will perform a regression analysis on the same.
+
+#### BigMart Data
+
+The data has following features, Item_Outlet_Sales being the target (dependent) variable:
+
+* Item_Identifier: Unique product ID
+* Item_Weight: Weight of the product
+* Item_Fat_Content: Levels of fat in different types of food
+* Item_Visibility: The total display area allocated to a product in each store
+* Item_Type: The category to which the product belongs
+* Item_MRP: Maximum Retail Price (list price) of the product
+* Outlet_Identifier: Unique store ID
+* Outlet_Establishment_Year: The year in which store was established
+* Outlet_Size: The size of the store
+* Outlet_Location_Type: The type of city in which the store is located
+* Outlet_Type: What type of supermarket is the store
+* Item_Outlet_Sales: Sales of the product in that particular store
+
+### We will structure the code as follows:
+1. Loading the data
+2. Exploratory Data Analysis (EDA) and Data Preparation
+4. Regression
+
+
+#### Libraries required-
+
+```{r loadlib, echo=T, message=FALSE, warning=FALSE, results='hide'}
+library(nnet) #for multiple regression
+library(dplyr) #for data cleaning
+library(caret) #for trainiing the model
+library(glmnet) #for lasso regression
+library(Amelia) #for predictive imputatin
+library(stringr) #for slicing character variables
+library(ggplot2) #for visualisation
+library(mltools) #for one hot encoding
+library(corrplot) #for plotting a correlation graph
+library(tidyverse) #for data cleaning
+library(data.table) #for data manupulation
+```
+
+### 1. Loading the data
+
+```{r}
+train <- read.csv("/Users/kritik/Desktop/Data Science/Datasets/Analytics Vidhya/bigmart_train.csv",na.strings = c('',' ','NA'),header = T)
+test <- read.csv("/Users/kritik/Desktop/Data Science/Datasets/Analytics Vidhya/bigmart_test.csv",na.strings = c('',' ','NA'),header = T)
+```
+
+In read.csv-
+* header is a logical value indicating whether the file contains the names of the variables as its first line.
+* na.strings = c() is a character vector of strings which are to be interpreted as NA values, therefore any blank cells/spaces will be considered as NA.
+
+#### For any further analysis and cleaning we will combine the testing and training data
+
+```{r}
+dim(train); dim(test)
+test$Item_Outlet_Sales <- NA #Setting the response variable in test dataset to NA
+bigmart <- suppressWarnings(bind_rows(train,test))
+dim(bigmart)
+```
+
+#### Previewing the data
+
+```{r}
+head(bigmart)
+```
+
+```{r}
+str(bigmart)
+```
+
+Creating a function which gives us all the necessary details needed for data cleaning and preparation in one place.
+
+```{r}
+dataInfo <- function(df) {
+  NAvalues <- list(); NAclass <- list(); UniqueVals <- list(); ColName <- names(df); Index <- c(1:dim(df)[2])
+  for(i in 1:dim(df)[2]) {
+    NAvalues[i] <- sum(is.na(df[,i]))
+    NAclass[i] <- class(df[,i])
+    if(class(df[,i])=="numeric" | class(df[,i])=="integer") {
+      UniqueVals[i] <- 'Not Applicable'
+    }
+    else{
+      UniqueVals[i] <- length(unique(df[,i]))
+    }
+  }
+  NAlist <- cbind(Index,ColName,NAvalues,NAclass,UniqueVals) 
+}
+
+Info <- dataInfo(bigmart); Info
+```
+
+### Basic Analysis from Variable names and data previewing
+
+One can conclude that the variables in this dataset may be divided into two categories-
+
+1. 'Item' Related (Item_Identifier, Item_Weight, Item_Fat_Content, Item_Visibility, Item_Type, Item_MRP)
+2. 'Outlet' Related (Outlet_Identifier, Outler_Establishment_Year, Outlet_Size, Outlet_Location_Type, Outlet_Type)
+
+### We will deal with one variable at a time
+
+####  1. Item_Identifier
+
+```{r}
+head(table(bigmart$Item_Identifier))
+min(table(bigmart$Item_Identifier))
+bigmart$Item_Identifier <- as.factor(bigmart$Item_Identifier)
+```
+
+On taking a deeper look at the Item_Identifier variable we notice the following-
+
+1. The first two letters in the Item_Identifier are of three types- 'DR', 'FD' and 'NC'.These should stand for 'Drinks', 'Food' and 'Non Consumable' respectively.
+2. The third letter which ranges from A - Z could stand for subcategories in a product Type.
+3. The numbers in Item_Identifier could stand for a unique ID assigned to a product in a category.
+
+Since the second. and third obsevation are somewhat similar to unique ID for each product and it is difficult to get some meaning out of it we will only look into the first observation.
+
+We will try create a new column for Item Category.
+
+```{r}
+bigmart$Item_Category <- str_sub(bigmart$Item_Identifier,start = 1L, end = 2L)
+bigmart$Item_Category <- as.factor(bigmart$Item_Category)
+head(bigmart$Item_Category)
+```
+
+#### 2. Item_Weight
+
+From above we can infer that every product in the dataset appears atleast 7 times. From common knowledge we know that product's weight remains same be it any sample. Therefore we can impute the missing value in Item_Weight with the weight of same product as identified by Item_Identifier.
+
+```{r}
+imputeWeight <- function(df) {
+  df %>%
+    group_by(Item_Identifier) %>%
+    mutate(Item_Weight = ifelse(is.na(Item_Weight),mean(Item_Weight,na.rm = T),Item_Weight)) %>%
+    ungroup()
+}
+
+Identify_Weight <- bigmart[,c(1,2)]
+Identify_Weight <- imputeWeight(Identify_Weight)
+bigmart[,c(1,2)] <- Identify_Weight
+```
+
+```{r}
+ggplot(bigmart) + geom_histogram(aes(Item_Weight),binwidth = 0.5,fill = 'skyblue', col = 'black')
+```
+
+From the above graph no noticeable skewness pattern is visible hence no transformation is needed.
+
+```{r}
+Info <- dataInfo(bigmart); Info
+```
+
+As we can see that Item_Weight has zero NA values now!
+
+#### 3. Item_Fat_Content
+
+```{r}
+glimpse(bigmart$Item_Fat_Content)
+unique(bigmart$Item_Fat_Content)
+```
+
+As we can see that Item_Fat_Content has redundant variables, the ideal levels should be:
+1. 'LF', 'low fat' and 'Low Fat'  -> 'Low Fat'
+2. 'reg' and 'Regular' -> 'Regular'
+
+```{r}
+levels(bigmart$Item_Fat_Content) <- list('Low Fat' = 'LF','Low Fat' = 'low fat','Regular'='reg')
+unique(bigmart$Item_Fat_Content)
+```
+
+As we found out during the analysis of Item_Identifier Variable, some products are Non Consumable hence we will replace the fat content in those rows by 'Not Consumable'.
+
+```{r}
+NC <- as.data.table(bigmart[,c(3,13)])
+NC[Item_Category=='NC',Item_Fat_Content:='Non Consumable',Item_Fat_Content]
+bigmart[,c(3,13)] <- NC
+```
+
+```{r}
+ggplot(bigmart %>% group_by(Item_Fat_Content) %>% summarise(Count = n())) + 
+  geom_bar(aes(Item_Fat_Content, Count), stat = 'identity', fill = 'skyblue',col='black')
+```
+
+```{r}
+Info <- dataInfo(bigmart); Info
+```
+
+#### 4. Item_Visibility
+
+I noticed while pre-viewing the data that few rows in Item_Visibility are zero and it doesn't make sense for an item to be occupying shelf space and yet have zero visibility.
+Hence we conclude that this is erraneous data.
+
+We know that every product in the dataset appears atleast 7 times. A particular product has to have similar visibility because of its appearance, be it in any outlet. Therefore we will impute the 0 values in Item_Visibility with the mean visibiility of same product as identified by Item_Identifier.
+
+```{r}
+bigmart[,4][bigmart[,4]==0] <- NA
+
+imputeFat <- function(df) {
+  df %>%
+    group_by(Item_Identifier) %>% 
+    mutate(Item_Visibility = ifelse(is.na(Item_Visibility),mean(Item_Visibility,na.rm=T),Item_Visibility)) %>%
+    ungroup()
+}
+
+Vis <- bigmart[,c(1,4,5)]
+Vis <- imputeFat(Vis)
+bigmart[,c(1,4,5)] <- Vis
+```
+
+```{r}
+ggplot(bigmart) + geom_histogram(aes(Item_Visibility),binwidt = 0.005, fill = 'skyblue', col = 'black')
+```
+
+As we see Item_Visibility is right skewed hence we will have to tranform the data.
+
+```{r}
+Info <- dataInfo(bigmart); Info
+```
+
+#### 5. Outlet_Size
+
+We will now replace the NA values in Outlet_Size by predictive Imputation.
+
+Outlet_Identifier, Outlet_Establishment_Year, Outlet_Location_Type and Outlet_Type are the only variables that the Outlet_Size should depend on hence we will use the Amelia function from Amelia library to impute the NA values in Outlet_Size.
+
+```{r}
+sub_mart <- bigmart  %>%
+  select(Outlet_Identifier,Outlet_Establishment_Year,Outlet_Size,Outlet_Location_Type,Outlet_Type)
+
+sub_mart$Outlet_Identifier <- as.factor(sub_mart$Outlet_Identifier)
+sub_mart$Outlet_Establishment_Year <- as.factor(sub_mart$Outlet_Establishment_Year)
+sub_mart$Outlet_Size <- factor(sub_mart$Outlet_Size,levels = c("Small","Medium","High"),labels = c(1,2,3),ordered = T)
+sub_mart$Outlet_Location_Type <- factor(sub_mart$Outlet_Location_Type,levels = c("Tier 3","Tier 2","Tier 1"),labels = c(3,2,1),ordered = T)
+sub_mart$Outlet_Type <- as.factor(sub_mart$Outlet_Type)
+```
+
+```{r}
+str(sub_mart)
+```
+
+```{r}
+imputed_mart <- amelia(sub_mart, m = 5, ords = c("Outlet_Size","Outlet_Location_Type"),
+                                   noms = c("Outlet_Establishment_Year", "Outlet_Identifier","Outlet_Type"),
+                                   incheck = TRUE,empri = 1)
+```
+
+```{r include=FALSE}
+fit1 <- multinom(Outlet_Size~Outlet_Location_Type+Outlet_Establishment_Year+Outlet_Identifier+Outlet_Type,data = imputed_mart$imputations$imp1)
+fit2 <- multinom(Outlet_Size~Outlet_Location_Type+Outlet_Establishment_Year+Outlet_Identifier+Outlet_Type,data = imputed_mart$imputations$imp2)
+fit3 <- multinom(Outlet_Size~Outlet_Location_Type+Outlet_Establishment_Year+Outlet_Identifier+Outlet_Type,data = imputed_mart$imputations$imp3)
+fit4 <- multinom(Outlet_Size~Outlet_Location_Type+Outlet_Establishment_Year+Outlet_Identifier+Outlet_Type,data = imputed_mart$imputations$imp4)
+fit5 <- multinom(Outlet_Size~Outlet_Location_Type+Outlet_Establishment_Year+Outlet_Identifier+Outlet_Type,data = imputed_mart$imputations$imp5)
+```
+
+```{r}
+anova(fit1,fit2,fit3,fit4,fit5,test = "Chisq")
+```
+
+While writing this notebook, 4th imputation appeared to be the best one from the above statistics, hence I have used the fourth imputation.
+
+```{r}
+bigmart$Outlet_Size <- imputed_mart$imputations$imp4$Outlet_Size
+```
+
+```{r}
+ggplot(bigmart %>% group_by(Outlet_Size) %>% summarise(Count = n())) + 
+  geom_bar(aes(Outlet_Size, Count), stat = 'identity', fill = 'skyblue',col = 'black')
+```
+
+### Feature Engineering
+
+On analysis of the variables and common knowledge we know that most products are sold at a base rate (which is usually with respect to a base weight).
+Hence here we will create a new variable which tells us about the Price of the Item per unit Weight.
+
+```{r}
+bigmart$Item_Price_Weight <- bigmart$Item_MRP / bigmart$Item_Weight
+```
+
+We know that people only shop at the place they may have been to earlier as well. Hence we will create a varriable which has the information about the Years of Operation of each store. Since this data is from 2013 we will calculate operational years with 2013.
+
+```{r}
+bigmart$Outlet_Operational_Years <- 2013 - bigmart$Outlet_Establishment_Year
+```
+
+```{r}
+Info <- dataInfo(bigmart); Info
+```
+
+### Encoding the Variables
+Machine learning algorithms and deep learning neural networks require that input and output variables are numbers.
+This means that categorical data must be encoded to numbers before we can use it to fit and evaluate a model.
+There are many ways to encode categorical variables for modelling, although the most common are as follows:
+
+1. Label Encoding: Where each label is converted to a unique number (for Ordinal Variables)
+2. One Hot Encoding: Where each label is mapped to a binary vector (for Nominal Variables)
+
+#### 1. Label Encoding
+We will perform label encoding on the following variables- 'Outlet_Size', 'Outlet_Location_Type'
+
+```{r}
+bigmart$Outlet_Size <- ifelse(bigmart$Outlet_Size == 1, 0, ifelse(bigmart$Outlet_Size == 2, 1, 2))
+bigmart$Outlet_Location_Type <- ifelse(bigmart$Outlet_Location_Type == 3, 0, ifelse(bigmart$Outlet_Location_Type == 2, 1, 2))
+```
+
+#### 2. One Hot Encoding
+We will perform one hot encoding on the following variables- 'Item_Fat_Content', 'Item_Type', 'Outlet_Identifier', 'Outlet_Type', 'Item_Category'. 
+
+```{r}
+ohe_var <- bigmart[,c(3,5,7,11,13)]
+bigmart_ohe <- one_hot(as.data.table(ohe_var))
+bigmart[,c(3,5,7,11,13)] <- NULL
+bigmart <- bind_cols(bigmart,bigmart_ohe)
+```
+
+#### Splitting the Data
+
+Now we will split the data back into orignal traininig and testing
+
+```{r}
+test <- subset(bigmart,is.na(bigmart$Item_Outlet_Sales))
+train <- subset(bigmart,!is.na(bigmart$Item_Outlet_Sales))
+```
+
+Dividing Predictor and Response into two different variables
+
+```{r}
+Ytrain <- train[,8]
+Xtrain <- train[,-8]
+```
+
+### 3. Regression
+Now we will apply Lassoo regression to the training data.
+
+```{r}
+set.seed(123)
+my_control = trainControl(method="cv", number=5)
+Grid = expand.grid(alpha = 1, lambda = seq(11,13,by = 0.0001))
+lasso_mod = train(x = train[, -c(1,8)], y = train$Item_Outlet_Sales,
+                             method='glmnet', trControl= my_control, tuneGrid = Grid)
+```
+
+```{r}
+head(lasso_mod$results)
+```
+
+Predicting the 'Item_Outlet_Sales' for testing data
+
+```{r}
+test$Item_Outlet_Sales <- predict(lasso_mod,newdata=test)
+```
+
+I hope you enjoyed this analysis! I think going forward it would be interesting to use a method other than lasso regression.
+Comments are Welcome
+
+Connect with me here-
+Click on any one of the below to connect with me there
+LinkedIn- linkedin.com/in/kritikseth
+GitHub- github.com/kritik-seth
+Kaggle- kaggle.com/kritikseth
