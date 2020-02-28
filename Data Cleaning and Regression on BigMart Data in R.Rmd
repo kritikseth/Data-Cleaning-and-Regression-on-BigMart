@@ -215,7 +215,7 @@ bigmart[,c(1,4,5)] <- Vis
 ```
 
 ```{r}
-ggplot(bigmart) + geom_histogram(aes(Item_Visibility),binwidt = 0.005, fill = 'skyblue', col = 'black')
+ggplot(bigmart) + geom_histogram(aes(Item_Visibility),binwidth = 0.005, fill = 'skyblue', col = 'black')
 ```
 
 As we see Item_Visibility is right skewed hence we will have to tranform the data.
